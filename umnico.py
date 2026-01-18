@@ -1,1049 +1,746 @@
-#!/usr/bin/env python3
-"""
-Owl Proxy Telegram Bot
-Manages proxy tokens and provides automated balance checking with proxy generation
-"""
-
-import asyncio
 import logging
-import sqlite3
-import httpx
-from datetime import datetime
-from functools import lru_cache
-from typing import Optional, Tuple, List, Dict
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.request import HTTPXRequest
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    ContextTypes,
-    filters,
-)
+import asyncio
+import aiohttp
+from aiohttp_socks import ProxyConnector
+import random
+import json
+import os
+from typing import List, Set
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-# Global country list
-COUNTRY_LIST = [
-        ("🇦🇫", "Afghanistan", "AF", "Pashto"),
-        ("🇦🇱", "Albania", "AL", "Albanian"),
-        ("🇩🇿", "Algeria", "DZ", "Arabic"),
-        ("🇦🇸", "American Samoa", "AS", "Samoan"),
-        ("🇦🇩", "Andorra", "AD", "Catalan"),
-        ("🇦🇴", "Angola", "AO", "Portuguese"),
-        ("🇦🇮", "Anguilla", "AI", "English"),
-        ("🇦🇶", "Antarctica", "AQ", "None (varies)"),
-        ("🇦🇬", "Antigua and Barbuda", "AG", "English"),
-        ("🇦🇷", "Argentina", "AR", "Spanish"),
-        ("🇦🇲", "Armenia", "AM", "Armenian"),
-        ("🇦🇼", "Aruba", "AW", "Dutch"),
-        ("🇦🇺", "Australia", "AU", "English"),
-        ("🇦🇹", "Austria", "AT", "German"),
-        ("🇦🇿", "Azerbaijan", "AZ", "Azerbaijani"),
-        ("🇧🇸", "Bahamas", "BS", "English"),
-        ("🇧🇭", "Bahrain", "BH", "Arabic"),
-        ("🇧🇩", "Bangladesh", "BD", "Bengali"),
-        ("🇧🇧", "Barbados", "BB", "English"),
-        ("🇧🇾", "Belarus", "BY", "Belarusian"),
-        ("🇧🇪", "Belgium", "BE", "Dutch"),
-        ("🇧🇿", "Belize", "BZ", "English"),
-        ("🇧🇯", "Benin", "BJ", "French"),
-        ("🇧🇲", "Bermuda", "BM", "English"),
-        ("🇧🇹", "Bhutan", "BT", "Dzongkha"),
-        ("🇧🇴", "Bolivia", "BO", "Spanish"),
-        ("🇧🇶", "Bonaire, Sint Eustatius and Saba", "BQ", "Dutch"),
-        ("🇧🇦", "Bosnia and Herzegovina", "BA", "Bosnian"),
-        ("🇧🇼", "Botswana", "BW", "English"),
-        ("🇧🇷", "Brazil", "BR", "Portuguese"),
-        ("🇮🇴", "British Indian Ocean Territory", "IO", "English"),
-        ("🇻🇬", "British Virgin Islands", "VG", "English"),
-        ("🇧🇳", "Brunei", "BN", "Malay"),
-        ("🇧🇬", "Bulgaria", "BG", "Bulgarian"),
-        ("🇧🇫", "Burkina Faso", "BF", "French"),
-        ("🇧🇮", "Burundi", "BI", "Kirundi"),
-        ("🇰🇭", "Cambodia", "KH", "Khmer"),
-        ("🇨🇲", "Cameroon", "CM", "French"),
-        ("🇨🇦", "Canada", "CA", "English"),
-        ("🇨🇻", "Cabo Verde", "CV", "Portuguese"),
-        ("🇰🇾", "Cayman Islands", "KY", "English"),
-        ("🇨🇫", "Central African Republic", "CF", "French"),
-        ("🇹🇩", "Chad", "TD", "French"),
-        ("🇨🇱", "Chile", "CL", "Spanish"),
-        ("🇨🇳", "China", "CN", "Mandarin Chinese"),
-        ("🇨🇴", "Colombia", "CO", "Spanish"),
-        ("🇰🇲", "Comoros", "KM", "Comorian"),
-        ("🇨🇬", "Congo", "CG", "French"),
-        ("🇨🇩", "Congo (DRC)", "CD", "French"),
-        ("🇨🇷", "Costa Rica", "CR", "Spanish"),
-        ("🇭🇷", "Croatia", "HR", "Croatian"),
-        ("🇨🇺", "Cuba", "CU", "Spanish"),
-        ("🇨🇾", "Cyprus", "CY", "Greek"),
-        ("🇨🇿", "Czechia", "CZ", "Czech"),
-        ("🇩🇰", "Denmark", "DK", "Danish"),
-        ("🇩🇯", "Djibouti", "DJ", "French"),
-        ("🇩🇲", "Dominica", "DM", "English"),
-        ("🇩🇴", "Dominican Republic", "DO", "Spanish"),
-        ("🇪🇨", "Ecuador", "EC", "Spanish"),
-        ("🇪🇬", "Egypt", "EG", "Arabic"),
-        ("🇸🇻", "El Salvador", "SV", "Spanish"),
-        ("🇬🇶", "Equatorial Guinea", "GQ", "Spanish"),
-        ("🇪🇷", "Eritrea", "ER", "Tigrinya"),
-        ("🇪🇪", "Estonia", "EE", "Estonian"),
-        ("🇸🇿", "Eswatini", "SZ", "Swazi"),
-        ("🇪🇹", "Ethiopia", "ET", "Amharic"),
-        ("🇫🇯", "Fiji", "FJ", "Fijian"),
-        ("🇫🇮", "Finland", "FI", "Finnish"),
-        ("🇫🇷", "France", "FR", "French"),
-        ("🇬🇦", "Gabon", "GA", "French"),
-        ("🇬🇲", "Gambia", "GM", "English"),
-        ("🇬🇪", "Georgia", "GE", "Georgian"),
-        ("🇩🇪", "Germany", "DE", "German"),
-        ("🇬🇭", "Ghana", "GH", "English"),
-        ("🇬🇷", "Greece", "GR", "Greek"),
-        ("🇬🇱", "Greenland", "GL", "Greenlandic"),
-        ("🇬🇩", "Grenada", "GD", "English"),
-        ("🇬🇹", "Guatemala", "GT", "Spanish"),
-        ("🇬🇳", "Guinea", "GN", "French"),
-        ("🇬🇼", "Guinea-Bissau", "GW", "Portuguese"),
-        ("🇬🇾", "Guyana", "GY", "English"),
-        ("🇭🇹", "Haiti", "HT", "Haitian Creole"),
-        ("🇭🇳", "Honduras", "HN", "Spanish"),
-        ("🇭🇰", "Hong Kong", "HK", "Chinese (Cantonese)"),
-        ("🇭🇺", "Hungary", "HU", "Hungarian"),
-        ("🇮🇸", "Iceland", "IS", "Icelandic"),
-        ("🇮🇳", "India", "IN", "Hindi"),
-        ("🇮🇩", "Indonesia", "ID", "Indonesian"),
-        ("🇮🇷", "Iran", "IR", "Persian (Farsi)"),
-        ("🇮🇶", "Iraq", "IQ", "Arabic"),
-        ("🇮🇪", "Ireland", "IE", "Irish"),
-        ("🇮🇱", "Israel", "IL", "Hebrew"),
-        ("🇮🇹", "Italy", "IT", "Italian"),
-        ("🇯🇲", "Jamaica", "JM", "English"),
-        ("🇯🇵", "Japan", "JP", "Japanese"),
-        ("🇯🇴", "Jordan", "JO", "Arabic"),
-        ("🇰🇿", "Kazakhstan", "KZ", "Kazakh"),
-        ("🇰🇪", "Kenya", "KE", "Swahili"),
-        ("🇰🇮", "Kiribati", "KI", "Gilbertese"),
-        ("🇰🇼", "Kuwait", "KW", "Arabic"),
-        ("🇰🇬", "Kyrgyzstan", "KG", "Kyrgyz"),
-        ("🇱🇦", "Laos", "LA", "Lao"),
-        ("🇱🇻", "Latvia", "LV", "Latvian"),
-        ("🇱🇧", "Lebanon", "LB", "Arabic"),
-        ("🇱🇸", "Lesotho", "LS", "Sesotho"),
-        ("🇱🇷", "Liberia", "LR", "English"),
-        ("🇱🇾", "Libya", "LY", "Arabic"),
-        ("🇱🇮", "Liechtenstein", "LI", "German"),
-        ("🇱🇹", "Lithuania", "LT", "Lithuanian"),
-        ("🇱🇺", "Luxembourg", "LU", "Luxembourgish"),
-        ("🇲🇬", "Madagascar", "MG", "Malagasy"),
-        ("🇲🇼", "Malawi", "MW", "English"),
-        ("🇲🇾", "Malaysia", "MY", "Malay"),
-        ("🇲🇻", "Maldives", "MV", "Dhivehi"),
-        ("🇲🇱", "Mali", "ML", "French"),
-        ("🇲🇹", "Malta", "MT", "Maltese"),
-        ("🇲🇭", "Marshall Islands", "MH", "Marshallese"),
-        ("🇲🇷", "Mauritania", "MR", "Arabic"),
-        ("🇲🇺", "Mauritius", "MU", "English"),
-        ("🇲🇽", "Mexico", "MX", "Spanish"),
-        ("🇫🇲", "Micronesia", "FM", "English"),
-        ("🇲🇩", "Moldova", "MD", "Romanian"),
-        ("🇲🇨", "Monaco", "MC", "French"),
-        ("🇲🇳", "Mongolia", "MN", "Mongolian"),
-        ("🇲🇪", "Montenegro", "ME", "Montenegrin"),
-        ("🇲🇦", "Morocco", "MA", "Arabic"),
-        ("🇲🇿", "Mozambique", "MZ", "Portuguese"),
-        ("🇲🇲", "Myanmar", "MM", "Burmese"),
-        ("🇳🇦", "Namibia", "NA", "English"),
-        ("🇳🇷", "Nauru", "NR", "Nauruan"),
-        ("🇳🇵", "Nepal", "NP", "Nepali"),
-        ("🇳🇱", "Netherlands", "NL", "Dutch"),
-        ("🇳🇿", "New Zealand", "NZ", "English"),
-        ("🇳🇮", "Nicaragua", "NI", "Spanish"),
-        ("🇳🇪", "Niger", "NE", "French"),
-        ("🇳🇬", "Nigeria", "NG", "English"),
-        ("🇰🇵", "North Korea", "KP", "Korean"),
-        ("🇲🇰", "North Macedonia", "MK", "Macedonian"),
-        ("🇳🇴", "Norway", "NO", "Norwegian"),
-        ("🇴🇲", "Oman", "OM", "Arabic"),
-        ("🇵🇰", "Pakistan", "PK", "Urdu"),
-        ("🇵🇼", "Palau", "PW", "Palauan"),
-        ("🇵🇸", "Palestine", "PS", "Arabic"),
-        ("🇵🇦", "Panama", "PA", "Spanish"),
-        ("🇵🇬", "Papua New Guinea", "PG", "Tok Pisin"),
-        ("🇵🇾", "Paraguay", "PY", "Spanish"),
-        ("🇵🇪", "Peru", "PE", "Spanish"),
-        ("🇵🇭", "Philippines", "PH", "Filipino"),
-        ("🇵🇱", "Poland", "PL", "Polish"),
-        ("🇵🇹", "Portugal", "PT", "Portuguese"),
-        ("🇵🇷", "Puerto Rico", "PR", "Spanish"),
-        ("🇶🇦", "Qatar", "QA", "Arabic"),
-        ("🇷🇴", "Romania", "RO", "Romanian"),
-        ("🇷🇺", "Russia", "RU", "Russian"),
-        ("🇷🇼", "Rwanda", "RW", "Kinyarwanda"),
-        ("🇼🇸", "Samoa", "WS", "Samoan"),
-        ("🇸🇲", "San Marino", "SM", "Italian"),
-        ("🇸🇹", "São Tomé and Príncipe", "ST", "Portuguese"),
-        ("🇸🇦", "Saudi Arabia", "SA", "Arabic"),
-        ("🇸🇳", "Senegal", "SN", "French"),
-        ("🇷🇸", "Serbia", "RS", "Serbian"),
-        ("🇸🇨", "Seychelles", "SC", "Creole"),
-        ("🇸🇱", "Sierra Leone", "SL", "English"),
-        ("🇸🇬", "Singapore", "SG", "Malay"),
-        ("🇸🇰", "Slovakia", "SK", "Slovak"),
-        ("🇸🇮", "Slovenia", "SI", "Slovene"),
-        ("🇸🇧", "Solomon Islands", "SB", "English"),
-        ("🇸🇴", "Somalia", "SO", "Somali"),
-        ("🇿🇦", "South Africa", "ZA", "Zulu"),
-        ("🇰🇷", "South Korea", "KR", "Korean"),
-        ("🇸🇸", "South Sudan", "SS", "English"),
-        ("🇪🇸", "Spain", "ES", "Spanish"),
-        ("🇱🇰", "Sri Lanka", "LK", "Sinhala"),
-        ("🇸🇩", "Sudan", "SD", "Arabic"),
-        ("🇸🇷", "Suriname", "SR", "Dutch"),
-        ("🇸🇪", "Sweden", "SE", "Swedish"),
-        ("🇨🇭", "Switzerland", "CH", "German"),
-        ("🇸🇾", "Syria", "SY", "Arabic"),
-        ("🇹🇼", "Taiwan", "TW", "Mandarin Chinese"),
-        ("🇹🇯", "Tajikistan", "TJ", "Tajik"),
-        ("🇹🇿", "Tanzania", "TZ", "Swahili"),
-        ("🇹🇭", "Thailand", "TH", "Thai"),
-        ("🇹🇱", "Timor-Leste", "TL", "Tetum"),
-        ("🇹🇬", "Togo", "TG", "French"),
-        ("🇹🇴", "Tonga", "TO", "Tongan"),
-        ("🇹🇹", "Trinidad and Tobago", "TT", "English"),
-        ("🇹🇳", "Tunisia", "TN", "Arabic"),
-        ("🇹🇷", "Turkey", "TR", "Turkish"),
-        ("🇹🇲", "Turkmenistan", "TM", "Turkmen"),
-        ("🇹🇻", "Tuvalu", "TV", "Tuvaluan"),
-        ("🇺🇬", "Uganda", "UG", "English"),
-        ("🇺🇦", "Ukraine", "UA", "Ukrainian"),
-        ("🇦🇪", "UAE", "AE", "Arabic"),
-        ("🇬🇧", "UK", "GB", "English"),
-        ("🇺🇸", "USA", "US", "English"),
-        ("🇺🇾", "Uruguay", "UY", "Spanish"),
-        ("🇺🇿", "Uzbekistan", "UZ", "Uzbek"),
-        ("🇻🇺", "Vanuatu", "VU", "Bislama"),
-        ("🇻🇦", "Vatican City", "VA", "Latin"),
-        ("🇻🇪", "Venezuela", "VE", "Spanish"),
-        ("🇻🇳", "Vietnam", "VN", "Vietnamese"),
-        ("🇾🇪", "Yemen", "YE", "Arabic"),
-        ("🇿🇲", "Zambia", "ZM", "English"),
-        ("🇿🇼", "Zimbabwe", "ZW", "English"),
-    ]
+# --- CONFIGURATION ---
+# 🔴 PUT YOUR TOKEN HERE
+BOT_TOKEN = "8327830149:AAEp8Nt5OI29h6o-niOIwR00M0gFQH1_RsY"
 
-# Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
 
-# Admin configuration
-ADMIN_USER_ID = 7613349080  # Only this user can add tokens
+UMNICO_API_URL = "https://umnico.com/api/tools/checker"
+PROXY_FILE = "proxy.txt"
 
-# Conversation states
-TOKEN_INPUT, USERID_INPUT = range(2)
+# --- SETTINGS ---
+MAX_CONCURRENT_TASKS = 100  # Adjust based on how many proxies you have
+PROXY_TIMEOUT = 10          # Give proxies 10s to respond
+SEND_INTERVAL = 0.5         # Message delay (seconds)
 
-# Database file
-DB_FILE = "proxy_tokens.db"
-
-# API Configuration
-API_BASE_URL = "https://api.owlproxy.com/owlproxy/api/vcDynamicGood"
-BALANCE_ENDPOINT = f"{API_BASE_URL}/queryCurrentTrafficBalance"
-CREATE_PROXY_ENDPOINT = f"{API_BASE_URL}/createProxy"
-
-DEFAULT_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
-    'Origin': 'https://proxy.owlproxy.com',
-    'Referer': 'https://proxy.owlproxy.com/'
+# Headers (No Cookies)
+API_HEADERS = {
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "en-US,en;q=0.8",
+    "priority": "u=1, i",
+    "referer": "https://umnico.com/tools/whatsapp-checker/",
+    "sec-ch-ua": '"Chromium";v="142", "Brave";v="142", "Not_A Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+    "sec-gpc": "1",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
 }
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger("ManualProxyBot")
+logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
-class Database:
-    """Handle all database operations"""
-    
-    def __init__(self, db_file: str = DB_FILE):
-        self.db_file = db_file
-        self.init_db()
-    
-    def init_db(self):
-        """Initialize the database with required table"""
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS tokens (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                token TEXT NOT NULL,
-                userid TEXT NOT NULL,
-                remaining_traffic INTEGER DEFAULT 0,
-                last_checked TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        cursor.execute('PRAGMA journal_mode=WAL;')
-        cursor.execute('PRAGMA synchronous=NORMAL;')
-        conn.commit()
-        conn.close()
-        logger.info("Database initialized")
-    
-    def add_token(self, token: str, userid: str) -> bool:
-        """Add a new token and userid to the database"""
-        try:
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-            cursor.execute(
-                'INSERT INTO tokens (token, userid) VALUES (?, ?)',
-                (token, userid)
-            )
-            conn.commit()
-            conn.close()
-            logger.info(f"Added token for userid: {userid}")
-            return True
-        except Exception as e:
-            logger.error(f"Error adding token: {e}")
-            return False
-    
-    def get_first_token(self) -> Optional[Tuple[int, str, str]]:
-        """Get the first (oldest) token from the database"""
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute(
-            'SELECT id, token, userid FROM tokens ORDER BY id ASC LIMIT 1'
-        )
-        result = cursor.fetchone()
-        conn.close()
-        return result
-    
-    def get_all_tokens(self) -> List[Tuple]:
-        """Get all tokens with their details"""
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute(
-            'SELECT id, token, userid, remaining_traffic, last_checked FROM tokens ORDER BY id ASC'
-        )
-        results = cursor.fetchall()
-        conn.close()
-        return results
-    
-    def update_balance(self, token_id: int, remaining_traffic: int):
-        """Update the remaining traffic for a token"""
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute(
-            'UPDATE tokens SET remaining_traffic = ?, last_checked = ? WHERE id = ?',
-            (remaining_traffic, datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"), token_id)
-        )
-        conn.commit()
-        conn.close()
-    
-    def delete_token(self, token_id: int) -> bool:
-        """Delete a token by ID"""
-        try:
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM tokens WHERE id = ?', (token_id,))
-            conn.commit()
-            conn.close()
-            logger.info(f"Deleted token ID: {token_id}")
-            return True
-        except Exception as e:
-            logger.error(f"Error deleting token: {e}")
-            return False
-    
-    def delete_first_token(self) -> bool:
-        """Delete the first token"""
-        first_token = self.get_first_token()
-        if first_token:
-            return self.delete_token(first_token[0])
-        return False
-    
-    def delete_all_tokens(self) -> bool:
-        """Delete all tokens from the database"""
-        try:
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM tokens')
-            conn.commit()
-            conn.close()
-            logger.info("All tokens deleted")
-            return True
-        except Exception as e:
-            logger.error(f"Error deleting all tokens: {e}")
-            return False
-    
-    def count_tokens(self) -> int:
-        """Count total tokens in database"""
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute('SELECT COUNT(*) FROM tokens')
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count
+# Globals
+STOP_SIGNAL = asyncio.Event()
+RESULT_QUEUE = asyncio.Queue()
+PROXY_LIST: List[str] = []
+PROXY_REQUEST_COUNT: int = 0  # Global request counter for rotation
+PROXY_MAX_USES: int = 20  # Max uses per proxy before rotation
+USER_SESSIONS: dict = {}  # Track session data per user
+PROXY_COLLECTION_MODE: dict = {}  # Track users in proxy collection mode {user_id: [proxy_list]}
+import threading
+PROXY_LOCK = threading.Lock()  # Thread-safe proxy selection
 
+# --- PROXY MANAGEMENT ---
 
-class ProxyAPI:
-    """Handle all API operations asynchronously"""
+def parse_proxy_format(proxy: str) -> str:
+    """
+    Convert proxy from protocol://ip:port:user:pass to protocol://user:pass@ip:port
+    Also handles protocol://user:pass@ip:port (already correct format)
+    Handles complex usernames with special characters.
+    """
+    if not proxy or "://" not in proxy:
+        return proxy
     
-    @staticmethod
-    async def check_balance(token: str, userid: str) -> Optional[Dict]:
-        """Check the remaining traffic balance"""
-        headers = DEFAULT_HEADERS.copy()
-        headers['Token'] = token
-        headers['Userid'] = userid
-        
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            try:
-                response = await client.get(BALANCE_ENDPOINT, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                
-                if data.get('code') == 200:
-                    return data.get('data')
-                else:
-                    logger.error(f"Balance check failed: {data.get('msg')}")
-                    return None
-            except Exception as e:
-                logger.error(f"Error checking balance: {e}")
-                return None
-    
-    @staticmethod
-    async def create_proxy(token: str, userid: str, country_code: str, good_num: int = 1) -> Optional[List[Dict]]:
-        """Create proxy with specified parameters"""
-        headers = DEFAULT_HEADERS.copy()
-        headers['Token'] = token
-        headers['Userid'] = userid
-        headers['Content-Type'] = 'application/json'
-        
-        payload = {
-            "proxyType": "socks5",
-            "proxyHost": "change4.owlproxy.com:7778",
-            "countryCode": country_code.upper(),
-            "state": "",
-            "city": "",
-            "time": 5,
-            "goodNum": good_num,
-            "format": "protocol://ip:port:user:pass"
-        }
-        
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            try:
-                response = await client.post(CREATE_PROXY_ENDPOINT, headers=headers, json=payload)
-                response.raise_for_status()
-                data = response.json()
-                
-                if data.get('code') == 200:
-                    return data.get('data')
-                else:
-                    logger.error(f"Proxy creation failed: {data.get('msg')}")
-                    return None
-            except Exception as e:
-                logger.error(f"Error creating proxy: {e}")
-                return None
-    
-    @staticmethod
-    def format_proxy(proxy_data: Dict) -> str:
-        """Format proxy data into the required format"""
-        return f"{proxy_data['proxyHost']}:{proxy_data['proxyPort']}:{proxy_data['userName']}:{proxy_data['password']}"
-
-
-# Initialize database
-db = Database()
-
-
-def get_keyboard(page: int, total_pages: int):
-    """Generate pagination keyboard"""
-    keyboard = []
-    row = []
-    
-    if page > 1:
-        row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"page_{page-1}"))
-    
-    row.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
-    
-    if page < total_pages:
-        row.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}"))
-    
-    keyboard.append(row)
-    return InlineKeyboardMarkup(keyboard)
-
-@lru_cache(maxsize=32)
-def get_page_content(page: int, chunk_size: int = 20) -> str:
-    """Get the text content for a specific page"""
-    start_idx = (page - 1) * chunk_size
-    end_idx = start_idx + chunk_size
-    chunk = COUNTRY_LIST[start_idx:end_idx]
-    
-    text = f"<b>🌍 Country Short Codes (Page {page})</b>\n\n"
-    text += "Click a code to copy:\n\n"
-    for flag, name, code, lang in chunk:
-        text += f"{flag} {name} - <code>{code}</code> - {lang}\n"
-    
-    return text
-
-async def list_countries(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show a full list of country short codes with click-to-copy formatting."""
-    chunk_size = 20
-    total_pages = (len(COUNTRY_LIST) + chunk_size - 1) // chunk_size
-    current_page = 1
-    
-    text = get_page_content(current_page, chunk_size)
-    reply_markup = get_keyboard(current_page, total_pages)
-    
-    await update.message.reply_text(text, parse_mode='HTML', reply_markup=reply_markup)
-
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle pagination button clicks"""
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "noop":
-        return
-        
-    page = int(query.data.split("_")[1])
-    chunk_size = 20
-    total_pages = (len(COUNTRY_LIST) + chunk_size - 1) // chunk_size
-    
-    text = get_page_content(page, chunk_size)
-    reply_markup = get_keyboard(page, total_pages)
+    # Check if already in correct format (has @)
+    if "@" in proxy:
+        return proxy
     
     try:
-        await query.edit_message_text(text, parse_mode='HTML', reply_markup=reply_markup)
+        # Split protocol and rest
+        protocol, rest = proxy.split("://", 1)
+        parts = rest.split(":")
+        
+        # Expected format: ip:port:user:pass
+        # But user/pass might contain colons, so we take first 2 as ip:port and rest as user:pass
+        if len(parts) >= 4:
+            # First part is IP, second is port
+            ip = parts[0]
+            port = parts[1]
+            # Everything after port is user:pass (join remaining parts)
+            user_pass = ":".join(parts[2:])
+            
+            # Split user:pass on last colon to separate user and pass
+            # Find the last colon to split user from pass
+            last_colon = user_pass.rfind(":")
+            if last_colon > 0:
+                user = user_pass[:last_colon]
+                password = user_pass[last_colon + 1:]
+                # Convert to protocol://user:pass@ip:port
+                converted = f"{protocol}://{user}:{password}@{ip}:{port}"
+                logger.info(f"Converted proxy format: {proxy[:30]}... -> {converted[:30]}...")
+                return converted
+        
+        # If only ip:port (no auth), return as-is
+        logger.warning(f"Could not parse proxy format: {proxy}")
+        return proxy
     except Exception as e:
-        logger.warning(f"Error editing message: {e}")
+        logger.error(f"Error parsing proxy {proxy}: {e}")
+        return proxy
+
+def load_proxies():
+    """Reads proxy.txt from disk. Expects format: protocol://ip:port:user:pass"""
+    global PROXY_LIST
+    if not os.path.exists(PROXY_FILE):
+        logger.warning(f"⚠️ {PROXY_FILE} not found!")
+        PROXY_LIST = []
+        return
+
+    with open(PROXY_FILE, "r", encoding="utf-8") as f:
+        # Filter empty lines
+        lines = [l.strip() for l in f if l.strip()]
+        
+        formatted = []
+        for l in lines:
+            # Keep proxy as-is if it has protocol, otherwise skip
+            if "://" in l:
+                # Parse and convert format
+                converted = parse_proxy_format(l)
+                formatted.append(converted)
+            else:
+                logger.warning(f"⚠️ Skipping invalid proxy (missing protocol): {l}")
+        
+        PROXY_LIST = formatted
+        logger.info(f"✅ Loaded {len(PROXY_LIST)} proxies from {PROXY_FILE}")
+
+def get_proxy():
+    """Get next proxy using round-robin rotation (20 uses per proxy)."""
+    global PROXY_REQUEST_COUNT
+    
+    if not PROXY_LIST:
+        return None
+    
+    # Thread-safe increment and proxy selection
+    with PROXY_LOCK:
+        PROXY_REQUEST_COUNT += 1
+        # Calculate which proxy to use based on request count
+        # Every 20 requests, move to next proxy
+        proxy_index = (PROXY_REQUEST_COUNT // PROXY_MAX_USES) % len(PROXY_LIST)
+    
+    return PROXY_LIST[proxy_index]
+
+def get_current_proxy():
+    """Get current proxy without incrementing counter (for retries)."""
+    if not PROXY_LIST:
+        return None
+    
+    with PROXY_LOCK:
+        proxy_index = (PROXY_REQUEST_COUNT // PROXY_MAX_USES) % len(PROXY_LIST)
+    
+    return PROXY_LIST[proxy_index]
+
+def purge_proxies():
+    """Delete all proxies from proxy.txt."""
+    global PROXY_LIST, PROXY_REQUEST_COUNT
+    
+    PROXY_LIST = []
+    PROXY_REQUEST_COUNT = 0
+    
+    try:
+        with open(PROXY_FILE, "w", encoding="utf-8") as f:
+            f.write("")  # Clear file
+        logger.info("🗑️ All proxies purged")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to purge proxies: {e}")
+        return False
+
+def add_proxies(proxy_lines: List[str]):
+    """Add proxies to proxy.txt (purges old ones first)."""
+    global PROXY_LIST, PROXY_REQUEST_COUNT
+    
+    # Purge old proxies first
+    purge_proxies()
+    
+    # Filter and format new proxies
+    formatted = []
+    for line in proxy_lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Expect format: protocol://ip:port:user:pass
+        if "://" in line:
+            # Parse and convert format
+            converted = parse_proxy_format(line)
+            formatted.append(converted)
+        else:
+            logger.warning(f"⚠️ Skipping invalid proxy (missing protocol): {line}")
+    
+    if not formatted:
+        return 0
+    
+    # Write to file
+    try:
+        with open(PROXY_FILE, "w", encoding="utf-8") as f:
+            for proxy in formatted:
+                f.write(proxy + "\n")
+        
+        # Reload into memory
+        PROXY_LIST = formatted
+        PROXY_REQUEST_COUNT = 0
+        
+        logger.info(f"✅ Added {len(formatted)} proxies")
+        return len(formatted)
+    except Exception as e:
+        logger.error(f"Failed to add proxies: {e}")
+        return 0
+
+# --- WORKER LOGIC ---
+
+async def sender_loop(application):
+    """Background message sender."""
+    while True:
+        try:
+            chat_id, text = await RESULT_QUEUE.get()
+            try:
+                await application.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            except: pass
+            await asyncio.sleep(SEND_INTERVAL)
+            RESULT_QUEUE.task_done()
+        except: await asyncio.sleep(1)
+
+async def check_single_number(session: aiohttp.ClientSession, phone: str, chat_id: int):
+    """
+    Checks one number. Retries with different proxies until valid response.
+    Tracks results in user session for file generation.
+    Counter only increments once per number.
+    """
+    if STOP_SIGNAL.is_set(): return None
+
+    # Get proxy ONCE for this number (increments counter)
+    proxy = get_proxy()
+    if not proxy:
+        return None
+    
+    max_retries = 50  # Limit retries per number
+    retry_count = 0
+
+    while retry_count < max_retries:
+        if STOP_SIGNAL.is_set(): return None
+        retry_count += 1
+        
+        # Use current proxy (no increment on retries)
+        current_proxy = get_current_proxy()
+        if not current_proxy:
+            await asyncio.sleep(1)
+            continue
+
+        try:
+            # Create dynamic connector for current proxy (supports all protocols)
+            proxy_connector = ProxyConnector.from_url(current_proxy, ssl=False)
+            async with aiohttp.ClientSession(connector=proxy_connector) as proxy_session:
+                async with proxy_session.get(
+                    UMNICO_API_URL, 
+                    params={"phone": phone}, 
+                    headers=API_HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=PROXY_TIMEOUT)
+                ) as response:
+                    
+                    if response.status == 200:
+                        try:
+                            data = await response.json()
+                            exists = data.get("exists")
+                            
+                            if exists is not None:
+                                # ✅ Got Result - Send real-time update
+                                if exists is True:
+                                    msg = f"✅ <b>Registered:</b> <code>{phone}</code>"
+                                    result = {"phone": phone, "registered": True}
+                                else:
+                                    msg = f"🔥 <b>UNREGISTERED:</b> <code>{phone}</code>"
+                                    result = {"phone": phone, "registered": False}
+                                
+                                # Send real-time message
+                                await RESULT_QUEUE.put((chat_id, msg))
+                                
+                                # Store in session for file generation
+                                if chat_id not in USER_SESSIONS:
+                                    USER_SESSIONS[chat_id] = {"registered": [], "unregistered": []}
+                                
+                                if result["registered"]:
+                                    USER_SESSIONS[chat_id]["registered"].append(phone)
+                                else:
+                                    USER_SESSIONS[chat_id]["unregistered"].append(phone)
+                                
+                                return result  # Exit Loop
+                        except: pass
+                    
+                    # If status != 200, wait a bit before retry
+                    await asyncio.sleep(0.5)
+        except:
+            # Connection error, wait before retry
+            await asyncio.sleep(0.5)
+    
+    # Max retries reached
+    return None
+
+async def check_single_number_with_proxy(phone: str, chat_id: int) -> dict:
+    """Check a single number using next rotated proxy (1 number = 1 proxy)."""
+    if STOP_SIGNAL.is_set():
+        return None
+    
+    # Get next proxy (rotates automatically)
+    proxy = get_proxy()
+    if not proxy:
+        logger.error("No proxy available")
+        return None
+    
+    try:
+        # Create proxy connector for this number
+        proxy_connector = ProxyConnector.from_url(proxy, ssl=False)
+        async with aiohttp.ClientSession(connector=proxy_connector) as proxy_session:
+            
+            try:
+                async with proxy_session.get(
+                    UMNICO_API_URL,
+                    params={"phone": phone},
+                    headers=API_HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=PROXY_TIMEOUT)
+                ) as response:
+                    
+                    logger.info(f"Response for {phone}: status={response.status}")
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        exists = data.get("exists")
+                        
+                        logger.info(f"Result for {phone}: exists={exists}")
+                        
+                        if exists is not None:
+                            if exists is True:
+                                msg = f"✅ <b>Registered:</b> <code>{phone}</code>"
+                                result = {"phone": phone, "registered": True}
+                            else:
+                                msg = f"🔥 <b>UNREGISTERED:</b> <code>{phone}</code>"
+                                result = {"phone": phone, "registered": False}
+                            
+                            # Send real-time message
+                            await RESULT_QUEUE.put((chat_id, msg))
+                            
+                            # Store in session
+                            if chat_id not in USER_SESSIONS:
+                                USER_SESSIONS[chat_id] = {"registered": [], "unregistered": []}
+                            
+                            if result["registered"]:
+                                USER_SESSIONS[chat_id]["registered"].append(phone)
+                            else:
+                                USER_SESSIONS[chat_id]["unregistered"].append(phone)
+                            
+                            return result
+                    else:
+                        logger.warning(f"Non-200 status for {phone}: {response.status}")
+            except Exception as e:
+                logger.error(f"Error checking {phone}: {e}")
+            
+    except Exception as e:
+        logger.error(f"Failed to create proxy connector: {e}")
+    
+    return None
 
 
+async def process_batch(update: Update, context: ContextTypes.DEFAULT_TYPE, numbers: List[str]):
+    STOP_SIGNAL.clear()
+    chat_id = update.effective_chat.id
+
+    # Initialize session
+    USER_SESSIONS[chat_id] = {"registered": [], "unregistered": []}
+
+    if not PROXY_LIST:
+        await load_proxies_wrapper(update)
+    
+    if not PROXY_LIST:
+        await update.message.reply_text(f"❌ <b>No Proxies Found!</b>\nPlease upload a file named <code>{PROXY_FILE}</code> or add it to the server folder.", parse_mode="HTML")
+        return
+
+    status_msg = await update.message.reply_text(
+        f"🚀 <b>Starting Check</b>\n\n"
+        f"📊 Total Numbers: <code>{len(numbers)}</code>\n"
+        f"🔌 Proxies Loaded: <code>{len(PROXY_LIST)}</code>\n"
+        f"🔄 Mode: <code>5 numbers per batch (2 sec delay)</code>\n\n"
+        f"⏳ Processing...",
+        parse_mode="HTML"
+    )
+
+    import time
+    start_time = time.time()
+    
+    # Clean numbers
+    clean_numbers = []
+    for num in numbers:
+        clean = num.strip().replace('+', '').replace(' ', '')
+        if clean.isdigit():
+            clean_numbers.append(clean)
+    
+    if not clean_numbers:
+        await update.message.reply_text("❌ No valid numbers found!", parse_mode="HTML")
+        return
+    
+    # Process numbers in batches of 5 (5 concurrent checks with different proxies, then 2s delay)
+    async def process_sequential():
+        batch_size = 5
+        for i in range(0, len(clean_numbers), batch_size):
+            if STOP_SIGNAL.is_set():
+                logger.info("Stop signal received, halting processing")
+                break
+            
+            # Get batch of up to 5 numbers
+            batch = clean_numbers[i:i + batch_size]
+            
+            # Process this batch concurrently (each with different proxy)
+            tasks = [check_single_number_with_proxy(phone, chat_id) for phone in batch]
+            await asyncio.gather(*tasks)
+            
+            # Wait 2 seconds before next batch (except last batch)
+            if i + batch_size < len(clean_numbers):
+                await asyncio.sleep(2.0)
+    
+    # Update status periodically
+    async def update_status():
+        while True:
+            await asyncio.sleep(5)
+            if STOP_SIGNAL.is_set():
+                break
+            
+            current_reg = len(USER_SESSIONS.get(chat_id, {}).get("registered", []))
+            current_unreg = len(USER_SESSIONS.get(chat_id, {}).get("unregistered", []))
+            processed = current_reg + current_unreg
+            
+            if processed >= len(clean_numbers):
+                break
+            
+            elapsed = time.time() - start_time
+            speed = processed / elapsed if elapsed > 0 else 0
+            
+            # Calculate current proxy info (each number uses one proxy)
+            current_proxy_index = (PROXY_REQUEST_COUNT - 1) % len(PROXY_LIST) if PROXY_LIST else 0
+            
+            try:
+                await status_msg.edit_text(
+                    f"🚀 <b>Check in Progress</b>\n\n"
+                    f"📊 Progress: <code>{processed}/{len(clean_numbers)}</code> ({processed*100//len(clean_numbers) if clean_numbers else 0}%)\n"
+                    f"✅ Registered: <code>{current_reg}</code>\n"
+                    f"❌ Unregistered: <code>{current_unreg}</code>\n"
+                    f"⚡ Speed: <code>{speed:.1f} num/sec</code>\n"
+                    f"🔄 Current Proxy: <code>{current_proxy_index + 1}/{len(PROXY_LIST)}</code>",
+                    parse_mode="HTML"
+                )
+            except:
+                pass
+    
+    # Run sequential processing and status updates concurrently
+    status_task = asyncio.create_task(update_status())
+    process_task = asyncio.create_task(process_sequential())
+    
+    await process_task
+    status_task.cancel()
+
+    # Generate and send result files
+    await send_result_files(update, chat_id, start_time)
+    
+    if STOP_SIGNAL.is_set():
+        await update.message.reply_text("🛑 Check stopped by user.")
+    
+    # Clean up session
+    if chat_id in USER_SESSIONS:
+        del USER_SESSIONS[chat_id]
 
 
+async def send_result_files(update: Update, chat_id: int, start_time: float):
+    """Generate and send result files to user."""
+    import time
+    from datetime import datetime
+    
+    session = USER_SESSIONS.get(chat_id, {"registered": [], "unregistered": []})
+    reg_numbers = session.get("registered", [])
+    unreg_numbers = session.get("unregistered", [])
+    
+    elapsed = time.time() - start_time
+    total = len(reg_numbers) + len(unreg_numbers)
+    
+    # Send summary
+    summary = (
+        f"🏁 <b>Check Completed!</b>\n\n"
+        f"⏱ Time: <code>{elapsed:.1f}s</code>\n"
+        f"📊 Total Checked: <code>{total}</code>\n"
+        f"✅ Registered: <code>{len(reg_numbers)}</code>\n"
+        f"❌ Unregistered: <code>{len(unreg_numbers)}</code>\n\n"
+        f"📂 Sending result files..."
+    )
+    await update.message.reply_text(summary, parse_mode="HTML")
+    
+    # Generate files
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    files_to_send = []
+    
+    if reg_numbers:
+        reg_file = f"registered_{timestamp}.txt"
+        with open(reg_file, "w", encoding="utf-8") as f:
+            for num in reg_numbers:
+                f.write(f"{num}\n")
+        files_to_send.append(reg_file)
+    
+    if unreg_numbers:
+        unreg_file = f"unregistered_{timestamp}.txt"
+        with open(unreg_file, "w", encoding="utf-8") as f:
+            for num in unreg_numbers:
+                f.write(f"{num}\n")
+        files_to_send.append(unreg_file)
+    
+    # Send files
+    if files_to_send:
+        for file_path in files_to_send:
+            try:
+                with open(file_path, "rb") as f:
+                    await update.message.reply_document(
+                        document=f,
+                        filename=file_path,
+                        caption=f"📄 {file_path}"
+                    )
+                # Clean up
+                os.remove(file_path)
+            except Exception as e:
+                logger.error(f"Failed to send file {file_path}: {e}")
+    else:
+        await update.message.reply_text("⚠️ No results to send.", parse_mode="HTML")
 
+# --- HANDLERS ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send a welcome message with user guide"""
-    user = update.effective_user
-    try:
-        is_admin = user.id == ADMIN_USER_ID
-    except:
-        is_admin = False
-    
-    if is_admin:
-        guide_text = f"""🔐 *Welcome Admin, {user.first_name}\\!*
+    await update.message.reply_text(
+        "🤖 <b>WhatsApp Number Checker Bot</b>\n\n"
+        "<b>Commands:</b>\n"
+        "• /start - Show this help\n"
+        "• /reload - Reload proxies from proxy.txt\n"
+        "• /addproxy - Add new proxies (purges old ones)\n"
+        "• /purgeproxy - Delete all proxies\n"
+        "• /stop - Cancel current check\n"
+        "• /status - Show proxy status\n\n"
+        "<b>Usage:</b>\n"
+        "1. Add proxies with /addproxy command\n"
+        "2. Send phone numbers (text or file)\n"
+        "3. Get real-time results + files\n\n"
+        "<b>Features:</b>\n"
+        "✅ Real-time result streaming\n"
+        "✅ Auto proxy rotation (20 uses/proxy)\n"
+        "✅ Result files (registered/unregistered)\n"
+        "✅ Multi-user support",
+        parse_mode="HTML"
+    )
 
-This bot helps you manage proxy tokens and provide automated balance checking\\.
+async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    STOP_SIGNAL.set()
+    await update.message.reply_text("🛑 Stopping...")
 
-📋 *Admin Commands:*
-• /add \\- Add a new Token and UserID 🔒
-• /del \\- Delete the first \\(oldest\\) token 🔒
-• /delall \\- Delete all tokens from the database 🔒
-• /showall \\- View all stored tokens with balances 🔒
-• /checkall \\- Manually trigger balance check for all tokens 🔒
-
-📋 *User Commands:*
-• /get \\[country\\] \\[count\\] \\- Generate proxies
-• /list \\- View all available country codes
-
-*Automatic Features:*
-• Balance is checked every hour automatically
-• Tokens with less than 50 MB remaining are auto\\-removed
-• First token in queue is always used for proxy generation
-
-💡 *Quick Start:*
-1️⃣ Add token & userid using /add
-2️⃣ Users can generate proxies using /get"""
+async def load_proxies_wrapper(update: Update):
+    """Helper to load and notify."""
+    load_proxies()
+    if PROXY_LIST:
+        await update.message.reply_text(f"✅ Loaded {len(PROXY_LIST)} proxies from disk.")
     else:
-        guide_text = f"""🔐 *Welcome to Owl Proxy Bot, {user.first_name}\\!*
+        await update.message.reply_text("⚠️ proxy.txt is empty or missing.")
 
-This bot helps you generate proxies quickly and easily\\.
+async def reload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await load_proxies_wrapper(update)
 
-📋 *Available Commands:*
-• /start \\- Show this help message
-• /get \\[country\\] \\[count\\] \\- Generate proxies
-• /list \\- View all supported country codes 🌍
-
-💡 *How to Use:*
-Simply use `/get \\[country\\] \\[count\\]` to generate up to 50 proxies\\!
-
-*Popular Country Codes:*
-🇮🇳 IN \\- India
-🇺🇸 US \\- United States
-🇬🇧 GB \\- United Kingdom
-🇩🇪 DE \\- Germany
-🇫🇷 FR \\- France
-
-*Example Usage:*
-`/get IN 5` \\- Get 5 Indian proxies
-`/get US 1` \\- Get 1 US proxy
-
-Need a specific country? Use `/list` to find its code\\!"""
-    
-    await update.message.reply_text(guide_text, parse_mode='MarkdownV2')
-
-
-async def add_token_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start the add token conversation - Admin only"""
-    user = update.effective_user
-    
-    # Check if user is admin
-    if user.id != ADMIN_USER_ID:
+async def purgeproxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Purge all proxies."""
+    success = purge_proxies()
+    if success:
         await update.message.reply_text(
-            "🔒 *Access Denied*\n\n"
-            "This command is only available to the bot administrator\\.\n\n"
-            "You can use /get \\[country\\] \\[count\\] to generate proxies\\.",
-            parse_mode='MarkdownV2'
+            "🗑️ <b>All proxies purged!</b>\n\n"
+            "Use /addproxy to add new proxies.",
+            parse_mode="HTML"
         )
-        return ConversationHandler.END
-    
-    await update.message.reply_text(
-        "🔑 *Add New Token*\n\n"
-        "Please send me the *Token* now\\.\n\n"
-        "Use /cancel to cancel this operation\\.",
-        parse_mode='MarkdownV2'
-    )
-    return TOKEN_INPUT
-
-
-async def token_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive the token and ask for userid"""
-    context.user_data['token'] = update.message.text.strip()
-    
-    await update.message.reply_text(
-        "✅ Token received\\!\n\n"
-        "Now please send me the *UserID*\\.",
-        parse_mode='MarkdownV2'
-    )
-    return USERID_INPUT
-
-
-async def userid_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive the userid and save to database"""
-    userid = update.message.text.strip()
-    token = context.user_data.get('token')
-    
-    if db.add_token(token, userid):
-        # Check balance immediately
-        balance_data = await ProxyAPI.check_balance(token, userid)
-        
-        if balance_data:
-            remaining = balance_data.get('remainingTraffic', 0)
-            db.update_balance(db.get_first_token()[0], remaining)
-            
-            await update.message.reply_text(
-                f"✅ *Token Added Successfully\\!*\n\n"
-                f"*UserID:* `{userid}`\n"
-                f"*Remaining Traffic:* {remaining} MB\n"
-                f"*Total Tokens:* {db.count_tokens()}\n\n"
-                f"Your token is now active and ready to use\\!",
-                parse_mode='MarkdownV2'
-            )
-        else:
-            await update.message.reply_text(
-                "✅ *Token Added\\!*\n\n"
-                "⚠️ Could not verify balance immediately\\. "
-                "The bot will check it during the next automatic scan\\.",
-                parse_mode='MarkdownV2'
-            )
     else:
         await update.message.reply_text(
-            "❌ *Error\\!*\n\n"
-            "Failed to add token to the database\\. Please try again\\.",
-            parse_mode='MarkdownV2'
+            "❌ <b>Failed to purge proxies.</b>\n\n"
+            "Check the logs for details.",
+            parse_mode="HTML"
         )
+
+async def addproxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start proxy collection mode."""
+    user_id = update.effective_user.id
     
-    context.user_data.clear()
-    return ConversationHandler.END
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel the conversation"""
-    context.user_data.clear()
+    # Initialize proxy collection mode
+    PROXY_COLLECTION_MODE[user_id] = []
+    
     await update.message.reply_text(
-        "❌ Operation cancelled\\.",
-        parse_mode='MarkdownV2'
+        "📝 <b>Proxy Collection Mode Started</b>\n\n"
+        "<b>Instructions:</b>\n"
+        "1. Send your proxies in format:\n"
+        "   <code>protocol://ip:port:user:pass</code>\n\n"
+        "2. You can send multiple messages\n"
+        "3. When finished, send: <code>done</code>\n\n"
+        "<b>Supported protocols:</b>\n"
+        "socks5, socks4, http, https\n\n"
+        "<b>Example:</b>\n"
+        "<code>socks5://proxy.com:1080:user:pass\n"
+        "http://proxy2.com:8080:user2:pass2</code>\n\n"
+        "⚠️ Sending 'done' will <b>purge all old proxies</b>!",
+        parse_mode="HTML"
     )
-    return ConversationHandler.END
 
-
-async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generate proxies based on user request"""
-    # Parse arguments
-    args = context.args
-    
-    if len(args) < 1:
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show proxy status."""
+    if not PROXY_LIST:
         await update.message.reply_text(
-            "❌ *Invalid Usage\\!*\n\n"
-            "*Correct format:* /get \\[country\\] \\[count\\]\n\n"
-            "*Examples:*\n"
-            "• /get IN 5 \\- Generate 5 Indian proxies\n"
-            "• /get US 1 \\- Generate 1 US proxy\n"
-            "• /get GB 3 \\- Generate 3 UK proxies",
-            parse_mode='MarkdownV2'
+            "⚠️ <b>No proxies loaded!</b>\n\n"
+            "Use /addproxy to add proxies.",
+            parse_mode="HTML"
         )
         return
     
-    # Parse country code
-    country_code = args[0].upper()
+    # Get usage stats
+    current_proxy_index = (PROXY_REQUEST_COUNT // PROXY_MAX_USES) % len(PROXY_LIST)
+    current_proxy = PROXY_LIST[current_proxy_index]
+    current_uses = PROXY_REQUEST_COUNT % PROXY_MAX_USES
+    if current_uses == 0 and PROXY_REQUEST_COUNT > 0:
+        current_uses = PROXY_MAX_USES
     
-    # Parse count (default 1)
-    count = 1
-    if len(args) > 1:
-        try:
-            count = int(args[1])
-            if count < 1 or count > 50:
+    msg = (
+        f"📊 <b>Proxy Status</b>\n\n"
+        f"🔌 Total Proxies: <code>{len(PROXY_LIST)}</code>\n"
+        f"🔄 Current Proxy: <code>{current_proxy_index + 1}/{len(PROXY_LIST)}</code>\n"
+        f"📈 Current Uses: <code>{current_uses}/{PROXY_MAX_USES}</code>\n"
+        f"📊 Total Requests: <code>{PROXY_REQUEST_COUNT}</code>\n\n"
+        f"<b>Active Proxy:</b>\n<code>{current_proxy}</code>"
+    )
+    
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    doc = update.message.document
+    
+    # 1. Check if it's the proxy file
+    if doc.file_name == PROXY_FILE:
+        f = await doc.get_file()
+        await f.download_to_drive(PROXY_FILE)
+        await update.message.reply_text("📥 <b>proxy.txt received!</b> Reloading list...", parse_mode="HTML")
+        load_proxies()
+        await update.message.reply_text(f"✅ Now using {len(PROXY_LIST)} proxies.")
+        return
+
+    # 2. Otherwise treat as number list
+    if doc.file_name.endswith(".txt"):
+        f = await doc.get_file()
+        b = await f.download_as_bytearray()
+        nums = [l.strip() for l in b.decode("utf-8", errors="ignore").splitlines() if l.strip()]
+        if nums: 
+            await update.message.reply_text(f"📂 Loaded {len(nums)} numbers.")
+            asyncio.create_task(process_batch(update, context, nums))
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.text:
+        return
+    
+    user_id = update.effective_user.id
+    message_text = update.message.text.strip()
+    
+    # Check if user is in proxy collection mode
+    if user_id in PROXY_COLLECTION_MODE:
+        # Check if user wants to finish
+        if message_text.lower() == "done":
+            collected_proxies = PROXY_COLLECTION_MODE[user_id]
+            
+            if not collected_proxies:
                 await update.message.reply_text(
-                    "❌ *Invalid count\\!*\n\n"
-                    "Please specify a count between 1 and 50\\.",
-                    parse_mode='MarkdownV2'
+                    "❌ <b>No proxies collected!</b>\n\n"
+                    "Please send proxies first, then type 'done'.",
+                    parse_mode="HTML"
                 )
                 return
-        except ValueError:
-            await update.message.reply_text(
-                "❌ *Invalid count format\\!*\n\n"
-                "Please use a number \\(e\\.g\\., /get IN 5\\)",
-                parse_mode='MarkdownV2'
-            )
-            return
-    
-    # Get first token
-    first_token = db.get_first_token()
-    
-    if not first_token:
-        await update.message.reply_text(
-            "❌ *No tokens available\\!*\n\n"
-            "Please add a token using /add first\\.",
-            parse_mode='MarkdownV2'
-        )
-        return
-    
-    token_id, token, userid = first_token
-    
-    # Send processing message
-    processing_msg = await update.message.reply_text(
-        f"⏳ Generating {count} proxy\\(ies\\) for *{country_code}*\\.\\.\\.",
-        parse_mode='MarkdownV2'
-    )
-    
-    # Create proxies
-    proxy_data = await ProxyAPI.create_proxy(token, userid, country_code, count)
-    
-    if proxy_data:
-        # Delete processing message
-        try:
-            await processing_msg.delete()
-        except Exception:
-            pass
-
-        # Send header
-        header = f"✅ *Proxies Generated Successfully\\!*\n"
-        header += f"*Country:* {country_code}\n"
-        header += f"*Count:* {len(proxy_data)}\n"
-        header += f"*UserID:* `{userid}`\n"
-        await update.message.reply_text(header, parse_mode='MarkdownV2')
-
-        # Send proxies in chunks to avoid message length limits
-        chunk_size = 15  # Send 15 proxies per message
-        current_chunk = []
-        
-        for p in proxy_data:
-            proxy_str = f"`{p['proxyHost']}`:`{p['proxyPort']}`:`{p['userName']}`:`{p['password']}`"
-            current_chunk.append(proxy_str)
             
-            if len(current_chunk) >= chunk_size:
-                await update.message.reply_text("\n".join(current_chunk), parse_mode='MarkdownV2')
-                current_chunk = []
-        
-        # Send remaining proxies
-        if current_chunk:
-            await update.message.reply_text("\n".join(current_chunk), parse_mode='MarkdownV2')
-        
-        # Check balance after generation
-        balance_data = await ProxyAPI.check_balance(token, userid)
-        if balance_data:
-            remaining = balance_data.get('remainingTraffic', 0)
-            db.update_balance(token_id, remaining)
+            # Add proxies (purges old ones first)
+            count = add_proxies(collected_proxies)
             
-            if remaining < 50:
-                db.delete_token(token_id)
+            # Exit collection mode
+            del PROXY_COLLECTION_MODE[user_id]
+            
+            if count > 0:
                 await update.message.reply_text(
-                    f"⚠️ *Token Removed*\n\n"
-                    f"Remaining traffic was {remaining} MB \\(below 50 MB threshold\\)\\.\n"
-                    f"Token has been removed from the database\\.",
-                    parse_mode='MarkdownV2'
+                    f"✅ <b>Proxies Added Successfully!</b>\n\n"
+                    f"🗑️ Old proxies purged\n"
+                    f"➕ Added: <code>{count}</code> new proxies\n"
+                    f"🔄 Rotation: <code>20 uses per proxy</code>\n\n"
+                    f"Ready to check numbers!",
+                    parse_mode="HTML"
                 )
-    else:
-        await processing_msg.delete()
-        await update.message.reply_text(
-            "❌ *Proxy Generation Failed\\!*\n\n"
-            "Could not create proxies\\. Please check:\n"
-            "• Token is valid\n"
-            "• Sufficient balance available \\(>= 50 MB\\)\n"
-            "• Country code is correct",
-            parse_mode='MarkdownV2'
-        )
-
-
-async def delete_first(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete the first token - Admin only"""
-    user = update.effective_user
-    
-    # Check if user is admin
-    if user.id != ADMIN_USER_ID:
-        await update.message.reply_text(
-            "🔒 *Access Denied*\n\n"
-            "This command is only available to the bot administrator\\.",
-            parse_mode='MarkdownV2'
-        )
-        return
-    
-    first_token = db.get_first_token()
-    
-    if not first_token:
-        await update.message.reply_text(
-            "❌ *No tokens to delete\\!*\n\n"
-            "The database is empty\\.",
-            parse_mode='MarkdownV2'
-        )
-        return
-    
-    token_id, token, userid = first_token
-    
-    if db.delete_first_token():
-        remaining_count = db.count_tokens()
-        await update.message.reply_text(
-            f"✅ *Token Deleted\\!*\n\n"
-            f"*UserID:* `{userid}`\n"
-            f"*Remaining tokens:* {remaining_count}",
-            parse_mode='MarkdownV2'
-        )
-    else:
-        await update.message.reply_text(
-            "❌ *Error\\!*\n\n"
-            "Failed to delete token\\.",
-            parse_mode='MarkdownV2'
-        )
-
-
-async def delete_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete all tokens - Admin only"""
-    user = update.effective_user
-    
-    # Check if user is admin
-    if user.id != ADMIN_USER_ID:
-        await update.message.reply_text(
-            "🔒 *Access Denied*\n\n"
-            "This command is only available to the bot administrator\\.",
-            parse_mode='MarkdownV2'
-        )
-        return
-    
-    count = db.count_tokens()
-    
-    if count == 0:
-        await update.message.reply_text(
-            "❌ *Database is already empty\\!*",
-            parse_mode='MarkdownV2'
-        )
-        return
-    
-    if db.delete_all_tokens():
-        await update.message.reply_text(
-            f"✅ *All Tokens Deleted\\!*\n\n"
-            f"Removed {count} token\\(s\\) from the database\\.",
-            parse_mode='MarkdownV2'
-        )
-    else:
-        await update.message.reply_text(
-            "❌ *Error\\!*\n\n"
-            "Failed to delete tokens\\.",
-            parse_mode='MarkdownV2'
-        )
-
-
-async def show_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show all tokens with their details - Admin only"""
-    user = update.effective_user
-    
-    # Check if user is admin
-    if user.id != ADMIN_USER_ID:
-        await update.message.reply_text(
-            "🔒 *Access Denied*\n\n"
-            "This command is only available to the bot administrator\\.",
-            parse_mode='MarkdownV2'
-        )
-        return
-    
-    tokens = db.get_all_tokens()
-    
-    if not tokens:
-        await update.message.reply_text(
-            "📋 *No Tokens Found*\n\n"
-            "The database is empty\\. Use /add to add a token\\.",
-            parse_mode='MarkdownV2'
-        )
-        return
-    
-    response = f"📋 *All Tokens \\({len(tokens)} total\\)*\n\n"
-    
-    for idx, (token_id, token, userid, remaining, last_checked) in enumerate(tokens, 1):
-        # Mask token
-        masked_token = f"{token[:8]}{'*' * 12}{token[-4:]}" if len(token) > 12 else f"{token[:4]}{'*' * 8}"
-        
-        # Format last checked
-        checked_time = "Never"
-        if last_checked:
-            checked_time = str(last_checked).split('.')[0]  # Remove microseconds
-            checked_time = checked_time.replace('-', '\\-').replace('.', '\\.')
-
-        
-        response += f"*{idx}\\. Token ID {token_id}*\n"
-        response += f"   Token: `{masked_token}`\n"
-        response += f"   UserID: `{userid}`\n"
-        response += f"   Balance: {remaining if remaining else 'Unknown'} MB\n"
-        response += f"   Last Checked: {checked_time}\n\n"
-    
-    await update.message.reply_text(response, parse_mode='MarkdownV2')
-
-
-async def check_balances_task(context: ContextTypes.DEFAULT_TYPE):
-    """Periodic task to check all token balances"""
-    logger.info("Starting automatic balance check...")
-    
-    tokens = db.get_all_tokens()
-    
-    if not tokens:
-        logger.info("No tokens to check")
-        return
-    
-    removed_tokens = []
-    
-    for token_id, token, userid, _, _ in tokens:
-        balance_data = await ProxyAPI.check_balance(token, userid)
-        
-        if balance_data:
-            remaining = balance_data.get('remainingTraffic', 0)
-            db.update_balance(token_id, remaining)
-            
-            logger.info(f"Token ID {token_id} (UserID: {userid}): {remaining} MB remaining")
-            
-            if remaining < 50:
-                db.delete_token(token_id)
-                removed_tokens.append((userid, remaining))
-                logger.info(f"Removed token ID {token_id} due to low balance ({remaining} MB)")
+            else:
+                await update.message.reply_text(
+                    "❌ <b>Failed to add proxies!</b>\n\n"
+                    "Make sure proxies are in correct format:\n"
+                    "<code>protocol://ip:port:user:pass</code>",
+                    parse_mode="HTML"
+                )
         else:
-            logger.warning(f"Failed to check balance for token ID {token_id}")
-    
-    if removed_tokens:
-        logger.info(f"Removed {len(removed_tokens)} token(s) due to low balance")
-    
-    logger.info("Balance check completed")
-
-
-async def manual_check_balances(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manually trigger balance check for all tokens"""
-    status_msg = await update.message.reply_text("🔄 Checking balances for all tokens...")
-    
-    tokens = db.get_all_tokens()
-    
-    if not tokens:
-        await status_msg.edit_text("No tokens found in database.")
+            # Collect proxies from message
+            proxy_lines = [line.strip() for line in message_text.splitlines() if line.strip()]
+            
+            # Filter valid proxies (must have protocol)
+            valid_count = 0
+            for line in proxy_lines:
+                if "://" in line:
+                    PROXY_COLLECTION_MODE[user_id].append(line)
+                    valid_count += 1
+            
+            total_collected = len(PROXY_COLLECTION_MODE[user_id])
+            
+            await update.message.reply_text(
+                f"✅ <b>Proxies Collected</b>\n\n"
+                f"➕ This message: <code>{valid_count}</code>\n"
+                f"📊 Total collected: <code>{total_collected}</code>\n\n"
+                f"Send more proxies or type <code>done</code> to finish.",
+                parse_mode="HTML"
+            )
         return
     
-    updated_count = 0
-    removed_count = 0
-    errors_count = 0
-    
-    for token_id, token, userid, _, _ in tokens:
-        balance_data = await ProxyAPI.check_balance(token, userid)
-        
-        if balance_data:
-            remaining = balance_data.get('remainingTraffic', 0)
-            db.update_balance(token_id, remaining)
-            updated_count += 1
-            
-            if remaining < 50:
-                db.delete_token(token_id)
-                removed_count += 1
-        else:
-            errors_count += 1
-            
-    report = (
-        f"✅ Balance check completed!\n\n"
-        f"📊 Checked: {len(tokens)}\n"
-        f"✅ Updated: {updated_count}\n"
-        f"🗑️ Removed (<50MB): {removed_count}\n"
-        f"⚠️ Errors: {errors_count}"
-    )
-    
-    await status_msg.edit_text(report)
+    # Normal mode: treat as phone numbers
+    nums = [l.strip() for l in message_text.splitlines() if l.strip()]
+    if nums:
+        asyncio.create_task(process_batch(update, context, nums))
 
-
-def main():
-    """Start the bot"""
-    # Replace with your bot token
-    BOT_TOKEN = "8226555654:AAEx9UB1-lDoHA5_9I1F55ISU-fkC_Z0Kxk"
-    
-    # Configure connection with increased timeouts
-    request = HTTPXRequest(connect_timeout=60.0, read_timeout=60.0)
-
-    # Create application
-    application = Application.builder().token(BOT_TOKEN).request(request).build()
-    
-    # Add conversation handler for adding tokens
-    add_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('add', add_token_start)],
-        states={
-            TOKEN_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, token_input)],
-            USERID_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, userid_input)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],
-    )
-    
-    # Add handlers
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(add_conv_handler)
-    application.add_handler(CommandHandler('get', get_proxy))
-    application.add_handler(CommandHandler('del', delete_first))
-    application.add_handler(CommandHandler('delall', delete_all))
-    application.add_handler(CommandHandler('showall', show_all))
-    application.add_handler(CommandHandler('checkall', manual_check_balances))
-    application.add_handler(CommandHandler('list', list_countries))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    
-    # Set up periodic balance check (every 1 hour)
-    job_queue = application.job_queue
-    job_queue.run_repeating(check_balances_task, interval=3600, first=10)  # Check every hour, first check after 10 seconds
-    
-    # Start the bot
-    logger.info("Bot started successfully!")
-    
-    # Manual execution loop to ensure proper initialization on all platforms
-    try:
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(application.initialize())
-        loop.run_until_complete(application.start())
-        loop.run_until_complete(application.updater.start_polling(allowed_updates=Update.ALL_TYPES))
-        
-        # Keep the application running
-        stop_signal = asyncio.Future()
-        try:
-            loop.run_until_complete(stop_signal)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            loop.run_until_complete(application.updater.stop())
-            loop.run_until_complete(application.stop())
-            loop.run_until_complete(application.shutdown())
-    except Exception as e:
-        logger.error(f"Critical error: {e}", exc_info=True)
-
+async def on_startup(app):
+    asyncio.create_task(sender_loop(app))
+    load_proxies()
 
 if __name__ == '__main__':
-    try:
-        # Check for existing event loop
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        main()
-    except KeyboardInterrupt:
-        pass
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(on_startup).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stop", stop_cmd))
+    app.add_handler(CommandHandler("reload", reload_cmd))
+    app.add_handler(CommandHandler("purgeproxy", purgeproxy_cmd))
+    app.add_handler(CommandHandler("addproxy", addproxy_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document)) # Accepts any file, logic checks name
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    print("🤖 WhatsApp Number Checker Bot Running...")
+    print("📊 Commands: /start, /reload, /addproxy, /purgeproxy, /status, /stop")
+    print("🔄 Proxy rotation: 20 uses per proxy")
+    print("✅ Real-time results + file generation enabled")
+    app.run_polling()
